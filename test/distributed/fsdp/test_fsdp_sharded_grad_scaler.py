@@ -4,11 +4,9 @@ import copy
 import functools
 import itertools
 import sys
-import unittest
 
 import torch
 from torch import distributed as dist
-from torch.cuda.amp.common import amp_definitely_not_available
 from torch.distributed.fsdp import CPUOffload, MixedPrecision
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullyShardedDataParallel as FSDP,
@@ -34,7 +32,6 @@ from torch.testing._internal.common_utils import (
     parametrize,
     run_tests,
     TEST_WITH_DEV_DBG_ASAN,
-    TEST_XPU,
     TestCase,
 )
 
@@ -77,10 +74,6 @@ subtest_name = functools.partial(subtest_name, test_name_mapping)
 
 
 class TestShardGradScaler(TestCase):
-    @unittest.skipIf(
-        amp_definitely_not_available() and not TEST_XPU,
-        "no supported device (cuda, xla, xpu) found",
-    )
     def test_grad_scaling(self):
         pg = DummyProcessGroup(0, 1)
         scaler = ShardedGradScaler(
@@ -96,10 +89,6 @@ class TestShardGradScaler(TestCase):
         self.assertTrue(outputs[2][0] == 8.0 and outputs[2][1] == 16.0)
         self.assertTrue(scaler._scale.device == t1.device)
 
-    @unittest.skipIf(
-        amp_definitely_not_available() and not TEST_XPU,
-        "no supported device (cuda, xla, xpu) found",
-    )
     def test_scaling_unscaling_sparse(self):
         pg = DummyProcessGroup(0, 1)
         scaler = ShardedGradScaler(
@@ -144,10 +133,6 @@ class TestShardGradScaler(TestCase):
         found_inf = scaler._unscale_grads_(opt, inv_scale, found_inf)[s1.device]
         self.assertEqual(found_inf, 1.0)
 
-    @unittest.skipIf(
-        amp_definitely_not_available() and not TEST_XPU,
-        "no supported device (cuda, xla, xpu) found",
-    )
     def test_inf_gradients_skip_optim_step(self):
         pg = DummyProcessGroup(0, 1)
         scaler = ShardedGradScaler(
@@ -312,7 +297,7 @@ class TestShardedGradScalerParityWithDDP(FSDPTestContinuous):
                         _grad_scaler.get_scale(),
                         orig_scale * _grad_scaler.get_backoff_factor(),
                         (
-                            f"rank: {self.rank} iter: {iter} expect origin scale {orig_scale} "
+                            lambda msg: f"{msg}\nrank: {self.rank} iter: {iter} expect origin scale {orig_scale} "
                             f"to be backed off by {_grad_scaler.get_backoff_factor()} "
                             f"but got {_grad_scaler.get_scale()}"
                         ),
@@ -322,7 +307,7 @@ class TestShardedGradScalerParityWithDDP(FSDPTestContinuous):
                         _grad_scaler.get_scale(),
                         orig_scale,
                         (
-                            f"rank: {self.rank} iter: {iter} expect same scale {orig_scale} "
+                            lambda msg: f"{msg}\nrank: {self.rank} iter: {iter} expect same scale {orig_scale} "
                             f"but got {_grad_scaler.get_scale()}"
                         ),
                     )
@@ -335,7 +320,7 @@ class TestShardedGradScalerParityWithDDP(FSDPTestContinuous):
                             param,
                             orig_param,
                             (
-                                f"rank: {self.rank} iter: {iter} expect the same params before "
+                                lambda msg: f"{msg}\nrank: {self.rank} iter: {iter} expect the same params before "
                                 f"and after optim.step but got {param} vs {orig_param}"
                             ),
                         )
@@ -344,14 +329,14 @@ class TestShardedGradScalerParityWithDDP(FSDPTestContinuous):
                             param,
                             orig_param,
                             (
-                                f"rank: {self.rank} iter: {iter} expect the updated params after "
+                                lambda msg: f"{msg}\nrank: {self.rank} iter: {iter} expect the updated params after "
                                 f"optim.step but got {param} vs {orig_param}"
                             ),
                         )
             self.assertEqual(
                 scaled_losses[0],
                 scaled_losses[1],
-                f"iter: {iter} {scaled_losses[0]} vs {scaled_losses[1]}",
+                lambda msg: f"{msg}\niter: {iter} {scaled_losses[0]} vs {scaled_losses[1]}",
             )
 
 

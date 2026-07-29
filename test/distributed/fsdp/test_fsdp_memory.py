@@ -15,7 +15,6 @@ from torch.testing._internal.common_utils import (
     parametrize,
     run_tests,
     TEST_CUDA,
-    TEST_HPU,
     TEST_WITH_DEV_DBG_ASAN,
 )
 from torch.utils.checkpoint import checkpoint
@@ -38,7 +37,7 @@ device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else 
 def get_cur_mem(rank, result, prefix):
     """Collect memory allocated values in a result dict in MB"""
     if TEST_CUDA:
-        torch._C._cuda_clearCublasWorkspaces()
+        torch.cuda._clear_cublas_workspaces()
     result[prefix] = round(torch.accelerator.memory_allocated() / 1024 / 1024)
 
 
@@ -162,7 +161,7 @@ class TestFSDPMemory(FSDPTest):
         output = cmp(results, expected)
         self.assertEqual(output, "")
 
-    @unittest.skipIf(TEST_HPU, "Memory will be different for CUDA and HPU, skipping")
+    @unittest.skipIf(not TEST_CUDA, "Memory expectations are CUDA-specific")
     @skip_if_lt_x_gpu(2)
     @parametrize("ckpt", ["no_ckpt", "ckpt"])
     def test_fsdp_memory(self, ckpt):
