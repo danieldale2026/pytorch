@@ -1015,102 +1015,6 @@ class TestFlopCounter(TestCase):
             torch.ops.mylib.trig_op()
         self.assertExpectedInline(get_total_flops(m2), """2""")
 
-    @requires_cuda_and_triton
-    @torch._functorch.config.patch("activation_memory_budget", 0.1)
-    @torch._functorch.config.patch("activation_memory_budget_solver", "dp")
-    @torch._functorch.config.patch("is_non_builtin_to_include", True)
-    def test_flop_counter_custom_triton_op_two_kernels_auto_ac(self):
-        import triton
-        import triton.language as tl
-
-        from torch.utils.flop_counter import register_flop_formula
-
-        @triton.jit
-        def sin_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
-            pid = tl.program_id(axis=0)
-            block_start = pid * BLOCK_SIZE
-            offsets = block_start + tl.arange(0, BLOCK_SIZE)
-            mask = offsets < n_elements
-            x = tl.load(x_ptr + offsets, mask=mask)
-            out = tl.sin(x)
-            tl.store(out_ptr + offsets, out, mask=mask)
-
-        @triton.jit
-        def cos_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
-            pid = tl.program_id(axis=0)
-            block_start = pid * BLOCK_SIZE
-            offsets = block_start + tl.arange(0, BLOCK_SIZE)
-            mask = offsets < n_elements
-            x = tl.load(x_ptr + offsets, mask=mask)
-            out = tl.cos(x)
-            tl.store(out_ptr + offsets, out, mask=mask)
-
-        n_elements = int(1e7)
-        x = torch.randn(n_elements, device="cuda", requires_grad=True)
-
-        cos_flops_recorded, sin_flops_recorded = 0, 0
-
-        @register_flop_formula(sin_kernel)
-        def compute_sin_kernel_flops(*args, **kwargs) -> int:
-            # dummy implementation
-            nonlocal sin_flops_recorded
-            sin_flops_recorded += 1
-            return 1
-
-        @register_flop_formula(cos_kernel)
-        def compute_cos_kernel_flops(*args, **kwargs) -> int:
-            # dummy implementation
-            nonlocal cos_flops_recorded
-            cos_flops_recorded += 1
-            return 1
-
-        def sin_grid(meta):
-            return (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-
-        def cos_grid(meta):
-            return (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-
-        @torch._library.triton.triton_op("mylib::trig_op", mutates_args=())
-        def trig_op(x_inp: torch.Tensor) -> torch.Tensor:
-            output = torch.empty_like(x_inp)
-            torch.library.wrap_triton(sin_kernel)[sin_grid](
-                x_inp, output, n_elements, 256
-            )
-            torch.library.wrap_triton(cos_kernel)[cos_grid](
-                x_inp, output, n_elements, 256
-            )
-            return output
-
-        # Register a backward
-        def trig_op_backward(ctx, grad_output):
-            (out,) = ctx.saved_tensors
-            return grad_output * out
-
-        def trig_op_setup_context(ctx, inputs, output):
-            ctx.save_for_backward(output)
-
-        trig_op.register_autograd(trig_op_backward, setup_context=trig_op_setup_context)
-
-        def fn(x_inp: torch.Tensor):
-            y1 = torch.ops.mylib.trig_op(x_inp)
-            y2 = torch.ops.mylib.trig_op(y1)
-            y3 = torch.ops.mylib.trig_op(y2)
-            return y3
-
-        torch.compile(fn, backend="aot_eager_decomp_partition", fullgraph=True)(x)
-
-        # Since we decompose, we will call the formula 3 times
-        self.assertEqual(
-            sin_flops_recorded,
-            3,
-            "Custom formula for sin_kernel not recorded during partitioning",
-        )
-        self.assertEqual(
-            cos_flops_recorded,
-            3,
-            "Custom formula for cos_kernel not recorded during partitioning",
-        )
-
     @skipIfNoTorchVision
     def test_inference_mode(self):
         def get_flops(model):
@@ -1357,6 +1261,100 @@ class TestFlopCounterDeviceType(TestCase):
         with FlopCounterMode() as m2:
             torch.ops.mylib.sin_op()
         self.assertExpectedInline(get_total_flops(m2), """2""")
+
+    @unittest.skipIf(not has_triton(), "requires Triton")
+    @torch._functorch.config.patch("activation_memory_budget", 0.1)
+    @torch._functorch.config.patch("activation_memory_budget_solver", "dp")
+    @torch._functorch.config.patch("is_non_builtin_to_include", True)
+    def test_flop_counter_custom_triton_op_two_kernels_auto_ac(self, device):
+        import triton
+        import triton.language as tl
+
+        from torch.utils.flop_counter import register_flop_formula
+
+        @triton.jit
+        def sin_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+            pid = tl.program_id(axis=0)
+            block_start = pid * BLOCK_SIZE
+            offsets = block_start + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_elements
+            x = tl.load(x_ptr + offsets, mask=mask)
+            out = tl.sin(x)
+            tl.store(out_ptr + offsets, out, mask=mask)
+
+        @triton.jit
+        def cos_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+            pid = tl.program_id(axis=0)
+            block_start = pid * BLOCK_SIZE
+            offsets = block_start + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_elements
+            x = tl.load(x_ptr + offsets, mask=mask)
+            out = tl.cos(x)
+            tl.store(out_ptr + offsets, out, mask=mask)
+
+        n_elements = int(1e7)
+        x = torch.randn(n_elements, device=device, requires_grad=True)
+
+        cos_flops_recorded, sin_flops_recorded = 0, 0
+
+        @register_flop_formula(sin_kernel)
+        def compute_sin_kernel_flops(*args, **kwargs) -> int:
+            # dummy implementation
+            nonlocal sin_flops_recorded
+            sin_flops_recorded += 1
+            return 1
+
+        @register_flop_formula(cos_kernel)
+        def compute_cos_kernel_flops(*args, **kwargs) -> int:
+            # dummy implementation
+            nonlocal cos_flops_recorded
+            cos_flops_recorded += 1
+            return 1
+
+        def sin_grid(meta):
+            return (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+
+        def cos_grid(meta):
+            return (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+
+        @torch._library.triton.triton_op("mylib::trig_op", mutates_args=())
+        def trig_op(x_inp: torch.Tensor) -> torch.Tensor:
+            output = torch.empty_like(x_inp)
+            torch.library.wrap_triton(sin_kernel)[sin_grid](
+                x_inp, output, n_elements, 256
+            )
+            torch.library.wrap_triton(cos_kernel)[cos_grid](
+                x_inp, output, n_elements, 256
+            )
+            return output
+
+        def trig_op_backward(ctx, grad_output):
+            (out,) = ctx.saved_tensors
+            return grad_output * out
+
+        def trig_op_setup_context(ctx, inputs, output):
+            ctx.save_for_backward(output)
+
+        trig_op.register_autograd(trig_op_backward, setup_context=trig_op_setup_context)
+
+        def fn(x_inp: torch.Tensor):
+            y1 = torch.ops.mylib.trig_op(x_inp)
+            y2 = torch.ops.mylib.trig_op(y1)
+            y3 = torch.ops.mylib.trig_op(y2)
+            return y3
+
+        torch.compile(fn, backend="aot_eager_decomp_partition", fullgraph=True)(x)
+
+        self.assertEqual(
+            sin_flops_recorded,
+            3,
+            "Custom formula for sin_kernel not recorded during partitioning",
+        )
+        self.assertEqual(
+            cos_flops_recorded,
+            3,
+            "Custom formula for cos_kernel not recorded during partitioning",
+        )
 
 
 class TestFlexAttentionEstimation(TestCase):
